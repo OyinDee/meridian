@@ -1,0 +1,21 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# pnpm 11 refuses to run dependency install scripts unless they are approved.
+# These are the ones the toolchain genuinely needs (native binaries, Prisma engines,
+# the SWC/esbuild builders used by vitest and tsup).
+allowBuilds:
+  '@node-rs/argon2': true
+  '@prisma/client': true
+  '@prisma/engines': true
+  '@scarf/scarf': false
+  '@swc/core': true
+  '@tailwindcss/oxide': true
+  esbuild: true
+  lightningcss: true
+  prisma: true
+  unrs-resolver: true
+
+minimumReleaseAgeExclude:
+  - tsup@9.0.0

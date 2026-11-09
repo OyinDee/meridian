@@ -1,0 +1,57 @@
+# Local development infrastructure.
+# Ports are deliberately non-default so they do not collide with anything already
+# running on your machine (postgres 5433, redis 6380, mailhog 1026/8026).
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: meridian-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: meridian
+      POSTGRES_PASSWORD: meridian
+      POSTGRES_DB: meridian
+      # Deterministic locale/format behaviour for money + date columns.
+      POSTGRES_INITDB_ARGS: '--locale=C --encoding=UTF8'
+    command:
+      - postgres
+      - -c
+      - max_connections=200
+      - -c
+      - log_min_duration_statement=200
+    ports:
+      - '5433:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U meridian -d meridian']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: meridian-redis
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '6380:6379'
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Catches all outbound email locally; UI at http://localhost:8026
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    container_name: meridian-mailhog
+    restart: unless-stopped
+    ports:
+      - '1026:1025'
+      - '8026:8025'
+
+volumes:
+  pgdata:
+  redisdata:

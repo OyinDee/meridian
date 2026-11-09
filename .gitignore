@@ -1,0 +1,44 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# builds
+dist/
+build/
+*.tsbuildinfo
+.vite/
+
+# env & secrets
+.env
+.env.*
+!.env.example
+
+# logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# test / coverage
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+apps/web/playwright/.cache/
+
+# generated
+apps/web/src/api/generated/
+apps/api/openapi.json
+apps/api/prisma/migrations/dev.db*
+
+# editors / os
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# misc
+.tmp-*
+tmp/

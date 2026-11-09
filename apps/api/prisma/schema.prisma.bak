@@ -1,0 +1,1123 @@
+// Meridian core-banking schema.
+//
+// Conventions
+//   * Table names are snake_case via @@map so hand-written ledger SQL reads naturally.
+//   * Columns on the ledger core (accounts, account_balances, journal_transactions,
+//     ledger_entries) and the event/audit tables are also mapped to snake_case,
+//     because that is where raw SQL lives. Other tables keep Prisma's camelCase.
+//   * Every monetary column is a BigInt count of MINOR UNITS (kobo for NGN). There is
+//     no float anywhere: see ADR 0002.
+//   * The ledger is append-only. Reversals and corrections are new journal
+//     transactions, never edits. Triggers in the initial migration enforce this.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  // Runtime uses the pooled (pgbouncer) endpoint; the CLI uses the direct endpoint.
+  url       = env("DATABASE_URL_POOLED")
+  directUrl = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------- enums
+
+enum AccountType {
+  CURRENT
+  SAVINGS
+  DOMICILIARY
+  LOAN
+  CREDIT_CARD
+  SUSPENSE
+  INTERNAL
+}
+
+enum AccountStatus {
+  PENDING
+  ACTIVE
+  DORMANT
+  FROZEN
+  CLOSED
+}
+
+enum NormalBalance {
+  DEBIT
+  CREDIT
+}
+
+enum LedgerDirection {
+  DEBIT
+  CREDIT
+}
+
+enum JournalKind {
+  DEPOSIT
+  WITHDRAWAL
+  INTERNAL_TRANSFER
+  EXTERNAL_TRANSFER
+  FEE
+  INTEREST_ACCRUAL
+  INTEREST_CAPITALISATION
+  FX_CONVERSION
+  LOAN_DISBURSEMENT
+  LOAN_REPAYMENT
+  CARD_AUTHORIZATION
+  CARD_CAPTURE
+  HOLD_RELEASE
+  SETTLEMENT
+  REVERSAL
+  ADJUSTMENT
+  OPENING_BALANCE
+}
+
+enum JournalStatus {
+  POSTED
+  REVERSED
+}
+
+enum TransferStatus {
+  PENDING
+  RISK_REVIEW
+  BLOCKED
+  PROCESSING
+  SETTLED
+  FAILED
+  REVERSED
+  REFUNDED
+}
+
+enum TransferChannel {
+  INTERNAL
+  NIP
+  NEFT
+  STANDING_ORDER
+  CARD
+}
+
+enum HoldStatus {
+  ACTIVE
+  CAPTURED
+  RELEASED
+  EXPIRED
+}
+
+enum LimitWindow {
+  PER_TRANSACTION
+  DAILY
+  MONTHLY
+}
+
+enum RiskDecision {
+  ALLOW
+  REVIEW
+  BLOCK
+}
+
+enum RiskRuleType {
+  AMOUNT_ABOVE
+  VELOCITY_COUNT
+  VELOCITY_SUM
+  NEW_BENEFICIARY
+  COUNTRY_MISMATCH
+  ODD_HOUR
+  BALANCE_RATIO
+  ANOMALY_ZSCORE
+}
+
+enum ReviewStatus {
+  OPEN
+  APPROVED
+  REJECTED
+  ESCALATED
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  CLOSED
+}
+
+enum KycStatus {
+  UNVERIFIED
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum Role {
+  CUSTOMER
+  TELLER
+  OFFICER
+  ADMIN
+  AUDITOR
+}
+
+enum LoanStatus {
+  PENDING
+  APPROVED
+  DISBURSED
+  REPAYING
+  SETTLED
+  DEFAULTED
+  WRITTEN_OFF
+}
+
+enum CardStatus {
+  PENDING
+  ACTIVE
+  FROZEN
+  EXPIRED
+  CANCELLED
+}
+
+enum CardBrand {
+  VERVE
+  MASTERCARD
+  VISA
+}
+
+enum CardAuthorizationStatus {
+  AUTHORIZED
+  CAPTURED
+  VOIDED
+  EXPIRED
+}
+
+enum ScheduleFrequency {
+  DAILY
+  WEEKLY
+  MONTHLY
+  QUARTERLY
+  ANNUALLY
+}
+
+enum ScheduledTransferStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+  FAILED
+}
+
+enum BeneficiaryType {
+  INTERNAL
+  NIP
+  NEFT
+}
+
+enum NotificationType {
+  TRANSFER_SENT
+  TRANSFER_RECEIVED
+  TRANSFER_FAILED
+  DEPOSIT
+  WITHDRAWAL
+  LOW_BALANCE
+  LIMIT_WARNING
+  SECURITY_ALERT
+  LOAN_PAYMENT_DUE
+  STATEMENT_READY
+}
+
+enum InterestCompounding {
+  DAILY
+  MONTHLY
+  QUARTERLY
+  ANNUALLY
+}
+
+// Prisma enum labels cannot contain "/", hence the mapping from the domain values.
+enum DayCountConvention {
+  ACT_365
+  ACT_360
+  ACT_ACT
+  THIRTY_360
+}
+
+enum InterestProduct {
+  SAVINGS
+  CURRENT
+  LOAN
+}
+
+enum OutboxStatus {
+  PENDING
+  PROCESSING
+  PROCESSED
+  FAILED
+}
+
+enum ReconStatus {
+  RUNNING
+  BALANCED
+  DISCREPANCIES
+  FAILED
+}
+
+// ---------------------------------------------------------------- identity
+
+model User {
+  id                 String     @id @default(uuid()) @db.Uuid
+  email              String     @unique
+  phone              String     @unique
+  passwordHash       String
+  firstName          String
+  lastName           String
+  dateOfBirth        DateTime   @db.Date
+  /// BVN is never stored in the clear: only a keyed hash for de-duplication.
+  bvnHash            String     @unique
+  bvnLast4           String
+  status             UserStatus @default(ACTIVE)
+  kycStatus          KycStatus  @default(UNVERIFIED)
+  role               Role       @default(CUSTOMER)
+  failedLoginCount   Int        @default(0)
+  lockedUntil        DateTime?
+  lastLoginAt        DateTime?
+  passwordChangedAt  DateTime   @default(now())
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+  deletedAt          DateTime?
+
+  profile       CustomerProfile?
+  accounts      Account[]
+  sessions      Session[]
+  refreshTokens RefreshToken[]
+  devices       Device[]
+  mfaFactors    MfaFactor[]
+  auditLogs     AuditLog[]
+  beneficiaries Beneficiary[]
+  limits        LimitProfile[]
+  notifications Notification[]
+  realtimeEvents RealtimeEvent[]
+  outboxEvents  OutboxEvent[]
+  journalTxns   JournalTransaction[]
+  transfers     Transfer[]          @relation("TransferInitiator")
+  loans         Loan[]
+  cards         Card[]
+  scheduledTransfers ScheduledTransfer[]
+  reviewItems   ReviewQueueItem[]
+  limitUsages   LimitUsage[]
+  statementExports StatementExport[]
+
+  @@map("users")
+}
+
+model CustomerProfile {
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @unique @db.Uuid
+  addressLine1    String?
+  addressLine2    String?
+  city            String?
+  state           String?
+  occupation      String?
+  /// Monthly income in minor units, NGN.
+  monthlyIncomeMinor BigInt?
+  /// Internal risk rating set by an officer, 1 (best) to 5 (watch list).
+  riskRating      Int      @default(3)
+  pep             Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("customer_profiles")
+}
+
+model Device {
+  id            String   @id @default(uuid()) @db.Uuid
+  userId        String   @db.Uuid
+  fingerprint   String
+  name          String
+  platform      String?
+  trustedAt     DateTime?
+  blockedAt     DateTime?
+  lastSeenAt    DateTime @default(now())
+  createdAt     DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, fingerprint])
+  @@map("devices")
+}
+
+model Session {
+  id           String    @id @default(uuid()) @db.Uuid
+  userId       String    @db.Uuid
+  deviceId     String?   @db.Uuid
+  ipAddress    String?
+  userAgent    String?
+  createdAt    DateTime  @default(now())
+  lastUsedAt   DateTime  @default(now())
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  revokedReason String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@map("sessions")
+}
+
+/// Refresh tokens rotate on every use. Each token belongs to a `familyId`; presenting
+/// a token that was already used means the family was stolen, so the whole family is
+/// revoked (reuse detection).
+model RefreshToken {
+  id            String    @id @default(uuid()) @db.Uuid
+  userId        String    @db.Uuid
+  sessionId     String?   @db.Uuid
+  familyId      String    @db.Uuid
+  /// SHA-256 of the token: the raw value only ever exists in the client's cookie.
+  tokenHash     String    @unique
+  parentId      String?   @db.Uuid
+  issuedAt      DateTime  @default(now())
+  expiresAt     DateTime
+  usedAt        DateTime?
+  revokedAt     DateTime?
+  revokedReason String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, familyId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+model MfaFactor {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @db.Uuid
+  type        String    @default("TOTP")
+  /// TOTP secret, encrypted at rest with the app's data key.
+  secretEncrypted String
+  confirmedAt DateTime?
+  lastUsedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type])
+  @@map("mfa_factors")
+}
+
+/// Append-only, hash-chained record of every privileged action.
+model AuditLog {
+  id            BigInt   @id @default(autoincrement())
+  actorUserId   String?  @db.Uuid
+  actorType     String   @default("USER")
+  action        String
+  entityType    String
+  entityId      String?
+  before        Json?
+  after         Json?
+  ipAddress     String?
+  userAgent     String?
+  correlationId String?
+  hashPrev      String?
+  hash          String
+  createdAt     DateTime @default(now())
+
+  actor User? @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([actorUserId, createdAt])
+  @@map("audit_logs")
+}
+
+// ---------------------------------------------------------------- ledger core
+
+/// A balance sheet account. Deposit accounts of customers are liabilities of the
+/// bank (normal balance CREDIT); the bank's own GL accounts are internal.
+model Account {
+  id             String        @id @default(uuid()) @db.Uuid
+  /// NUBAN, 10 digits. Internal GL accounts use a 10-digit code too ("1000000001").
+  accountNumber  String        @unique @map("account_number")
+  /// Chart-of-accounts code, groupable and readable in reports.
+  ledgerCode     String        @unique @map("ledger_code")
+  userId         String?       @db.Uuid @map("user_id")
+  type           AccountType   @map("type")
+  status         AccountStatus @default(ACTIVE) @map("status")
+  currency       String        @db.Char(3) @map("currency")
+  normalBalance  NormalBalance @map("normal_balance")
+  nickname       String?
+  productCode    String        @default("STANDARD") @map("product_code")
+  allowOverdraft Boolean       @default(false) @map("allow_overdraft")
+  overdraftLimitMinor BigInt   @default(0) @map("overdraft_limit_minor")
+  minimumBalanceMinor BigInt   @default(0) @map("minimum_balance_minor")
+  /// Optimistic-lock version, bumped on every balance mutation.
+  version        Int           @default(0) @map("version")
+  openedAt       DateTime      @default(now()) @map("opened_at")
+  closedAt       DateTime?     @map("closed_at")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  user            User?             @relation(fields: [userId], references: [id], onDelete: Restrict)
+  balance         AccountBalance?
+  ledgerEntries   LedgerEntry[]
+  outgoingTransfers Transfer[]      @relation("TransferFrom")
+  incomingTransfers Transfer[]      @relation("TransferTo")
+  holds           Hold[]
+  limitProfile    LimitProfile?
+  limitUsages     LimitUsage[]
+  loans           Loan[]
+  cards           Card[]
+  scheduledTransfers ScheduledTransfer[]
+  interestAccruals InterestAccrual[]
+  statementExports StatementExport[]
+
+  @@index([userId, status])
+  @@index([type, currency])
+  @@map("accounts")
+}
+
+/// Materialised balance, a cache of the ledger. `journal_transactions` and
+/// `ledger_entries` remain the source of truth; the nightly reconciliation job
+/// re-derives these numbers and reports any drift.
+model AccountBalance {
+  accountId        String   @id @db.Uuid @map("account_id")
+  /// Signed balance in minor units, in the account's normal-balance direction.
+  balanceMinor     BigInt   @default(0) @map("balance_minor")
+  /// Funds the customer can actually spend: balance minus active holds.
+  availableMinor   BigInt   @default(0) @map("available_minor")
+  /// Total of active holds/authorisations.
+  holdsMinor       BigInt   @default(0) @map("holds_minor")
+  /// Signed total of all credits minus debits ever posted, for reconciliation.
+  entryCount       BigInt   @default(0) @map("entry_count")
+  version          Int      @default(0) @map("version")
+  lastEntryId      BigInt?  @map("last_entry_id")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@map("account_balances")
+}
+
+/// One balanced batch of postings: the unit of double-entry.
+/// Immutable once written; a mistake is corrected with a REVERSAL transaction.
+model JournalTransaction {
+  id              String        @id @default(uuid()) @db.Uuid
+  /// Monotonic global ordering, the basis of the hash chain and of SSE resume.
+  sequence        BigInt        @unique @default(autoincrement()) @map("sequence")
+  reference       String        @unique @map("reference")
+  kind            JournalKind   @map("kind")
+  status          JournalStatus @default(POSTED) @map("status")
+  currency        String        @db.Char(3) @map("currency")
+  /// Total of the debit side; provably equal to the credit side (trigger-enforced).
+  amountMinor     BigInt        @map("amount_minor")
+  entryCount      Int           @map("entry_count")
+  narrative       String        @map("narrative")
+  valueDate       DateTime      @db.Date @map("value_date")
+  bookedAt        DateTime      @default(now()) @map("booked_at")
+  idempotencyKey  String?       @unique @map("idempotency_key")
+  initiatedByUserId String?     @db.Uuid @map("initiated_by_user_id")
+  transferId      String?       @db.Uuid @map("transfer_id")
+  loanId          String?       @db.Uuid @map("loan_id")
+  /// Tamper evidence: hash(prev.hash || canonical payload || sequence).
+  hashPrev        String?       @map("hash_prev")
+  hash            String        @map("hash")
+  hashAlgo        String        @default("sha256:v1") @map("hash_algo")
+  reversedById    String?       @unique @db.Uuid @map("reversed_by_id")
+  reversedAt      DateTime?     @map("reversed_at")
+  createdAt       DateTime      @default(now()) @map("created_at")
+
+  initiatedBy User?              @relation(fields: [initiatedByUserId], references: [id], onDelete: SetNull)
+  entries     LedgerEntry[]
+  transfer    Transfer?          @relation("TransferPosting", fields: [transferId], references: [id])
+  loan        Loan?              @relation(fields: [loanId], references: [id])
+  reversedBy  JournalTransaction? @relation("Reversal", fields: [reversedById], references: [id])
+  reverses    JournalTransaction? @relation("Reversal")
+
+  @@index([bookedAt, sequence])
+  @@index([kind, bookedAt])
+  @@index([valueDate])
+  @@map("journal_transactions")
+}
+
+/// One leg of a journal transaction. Append-only: INSERT only, never UPDATE or
+/// DELETE (enforced by trigger, and by a restricted role in production).
+model LedgerEntry {
+  id                 BigInt          @id @default(autoincrement())
+  journalTransactionId String        @db.Uuid @map("journal_transaction_id")
+  accountId          String          @db.Uuid @map("account_id")
+  sequence           BigInt          @unique @default(autoincrement()) @map("sequence")
+  direction          LedgerDirection @map("direction")
+  /// Always a positive magnitude; `direction` carries the sign.
+  amountMinor        BigInt          @map("amount_minor")
+  currency           String          @db.Char(3) @map("currency")
+  /// Running balance of the account immediately after this leg, signed in the
+  /// account's normal-balance direction. Makes statements reconstructable.
+  balanceAfterMinor  BigInt          @map("balance_after_minor")
+  narration          String?         @map("narration")
+  valueDate          DateTime        @db.Date @map("value_date")
+  createdAt          DateTime        @default(now()) @map("created_at")
+
+  journalTransaction JournalTransaction @relation(fields: [journalTransactionId], references: [id], onDelete: Restrict)
+  account            Account            @relation(fields: [accountId], references: [id], onDelete: Restrict)
+
+  @@index([accountId, sequence(sort: Desc)])
+  @@index([accountId, createdAt(sort: Desc)])
+  @@index([journalTransactionId])
+  @@map("ledger_entries")
+}
+
+// ---------------------------------------------------------------- payments
+
+model Beneficiary {
+  id             String          @id @default(uuid()) @db.Uuid
+  userId         String          @db.Uuid
+  name           String
+  accountNumber  String
+  bankCode       String
+  type           BeneficiaryType @default(NIP)
+  nickname       String?
+  /// Name returned by name enquiry on the destination bank, when it differs.
+  verifiedName   String?
+  isFavorite     Boolean         @default(false)
+  lastUsedAt     DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transfers Transfer[]
+  scheduledTransfers ScheduledTransfer[]
+
+  @@unique([userId, accountNumber, bankCode])
+  @@index([userId, isFavorite])
+  @@map("beneficiaries")
+}
+
+/// The business-level payment intent. Money movement happens through the journal
+/// transaction referenced by `journalTransactionId`; this row carries the state
+/// machine, the risk decision and the rails metadata.
+model Transfer {
+  id                 String          @id @default(uuid()) @db.Uuid
+  reference          String          @unique
+  /// External rail reference (NIP session id, NEFT batch reference).
+  railReference      String?         @unique
+  channel            TransferChannel
+  status             TransferStatus  @default(PENDING)
+  fromAccountId      String          @db.Uuid
+  toAccountId        String?         @db.Uuid
+  beneficiaryId      String?         @db.Uuid
+  /// Destination account number as typed, kept even after settlement.
+  toAccountNumber    String?
+  toBankCode         String?
+  toAccountName      String?
+  amountMinor        BigInt
+  feeMinor           BigInt          @default(0)
+  currency           String          @db.Char(3)
+  narration          String
+  initiatedByUserId  String          @db.Uuid
+  idempotencyKey     String?         @unique
+  riskDecision       RiskDecision    @default(ALLOW)
+  riskScore          Decimal?        @db.Decimal(6, 3)
+  failureCode        String?
+  failureReason      String?
+  /// Amount actually reversed/refunded so far (partial refunds are allowed).
+  reversedMinor      BigInt          @default(0)
+  journalTransactionId String?       @db.Uuid @unique
+  scheduledTransferId String?        @db.Uuid
+  settledAt          DateTime?
+  reversedAt         DateTime?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  fromAccount     Account             @relation("TransferFrom", fields: [fromAccountId], references: [id], onDelete: Restrict)
+  toAccount       Account?            @relation("TransferTo", fields: [toAccountId], references: [id], onDelete: Restrict)
+  beneficiary     Beneficiary?        @relation(fields: [beneficiaryId], references: [id], onDelete: SetNull)
+  initiatedBy     User                @relation("TransferInitiator", fields: [initiatedByUserId], references: [id], onDelete: Restrict)
+  journalTransaction JournalTransaction? @relation("TransferPosting")
+  scheduledTransfer ScheduledTransfer?  @relation(fields: [scheduledTransferId], references: [id])
+  events          TransferEvent[]
+  holds           Hold[]
+  riskEvents      RiskEvent[]
+  reviewItem      ReviewQueueItem?
+
+  @@index([fromAccountId, createdAt(sort: Desc)])
+  @@index([status, createdAt])
+  @@index([initiatedByUserId, createdAt(sort: Desc)])
+  @@index([channel, status])
+  @@map("transfers")
+}
+
+/// Every state transition a transfer went through, in order. This is what makes
+/// the state machine auditable and debuggable after an incident.
+model TransferEvent {
+  id          BigInt         @id @default(autoincrement())
+  transferId  String         @db.Uuid
+  fromStatus  TransferStatus?
+  toStatus    TransferStatus
+  reason      String?
+  actorUserId String?        @db.Uuid
+  metadata    Json?
+  createdAt   DateTime       @default(now())
+
+  transfer Transfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+
+  @@index([transferId, id])
+  @@map("transfer_events")
+}
+
+/// A two-phase reservation of funds: card authorisations, pending NIP holds and
+/// cheque deposits all reserve money without moving it.
+model Hold {
+  id            String     @id @default(uuid()) @db.Uuid
+  accountId     String     @db.Uuid
+  transferId    String?    @db.Uuid
+  cardAuthorizationId String? @db.Uuid
+  amountMinor   BigInt
+  capturedMinor BigInt     @default(0)
+  currency      String     @db.Char(3)
+  status        HoldStatus @default(ACTIVE)
+  reason        String
+  expiresAt     DateTime
+  releasedAt    DateTime?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  account   Account    @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  transfer  Transfer?  @relation(fields: [transferId], references: [id], onDelete: SetNull)
+
+  @@index([accountId, status])
+  @@index([expiresAt, status])
+  @@map("holds")
+}
+
+model ScheduledTransfer {
+  id            String                  @id @default(uuid()) @db.Uuid
+  userId        String                  @db.Uuid
+  fromAccountId String                  @db.Uuid
+  beneficiaryId String                  @db.Uuid
+  amountMinor   BigInt
+  currency      String                  @db.Char(3)
+  narration     String
+  frequency     ScheduleFrequency
+  status        ScheduledTransferStatus @default(ACTIVE)
+  startsOn      DateTime                @db.Date
+  endsOn        DateTime?               @db.Date
+  nextRunAt     DateTime
+  lastRunAt     DateTime?
+  runCount      Int                     @default(0)
+  failureCount  Int                     @default(0)
+  lastFailure   String?
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account     Account    @relation(fields: [fromAccountId], references: [id], onDelete: Restrict)
+  beneficiary Beneficiary @relation(fields: [beneficiaryId], references: [id], onDelete: Restrict)
+  transfers   Transfer[]
+
+  @@index([status, nextRunAt])
+  @@map("scheduled_transfers")
+}
+
+// ---------------------------------------------------------------- risk / limits
+
+model LimitProfile {
+  id          String      @id @default(uuid()) @db.Uuid
+  /// Null userId means the bank-wide default profile for the account type.
+  userId      String?     @db.Uuid
+  accountId   String?     @unique @db.Uuid
+  perTransactionMinor BigInt
+  dailyMinor  BigInt
+  monthlyMinor BigInt
+  currency    String      @db.Char(3)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  user    User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account Account? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("limit_profiles")
+}
+
+/// Rolling window usage. Incremented with an atomic upsert inside the transfer's
+/// transaction so concurrent transfers cannot both pass the limit check.
+model LimitUsage {
+  id          String      @id @default(uuid()) @db.Uuid
+  accountId   String      @db.Uuid
+  userId      String      @db.Uuid
+  window      LimitWindow
+  currency    String      @db.Char(3)
+  /// Start of the window in the bank's timezone (Africa/Lagos), date-truncated.
+  windowStart DateTime
+  usedMinor   BigInt      @default(0)
+  transferCount Int       @default(0)
+  updatedAt   DateTime    @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, window, windowStart])
+  @@index([userId, window, windowStart])
+  @@map("limit_usages")
+}
+
+model RiskRule {
+  id        String       @id @default(uuid()) @db.Uuid
+  name      String       @unique
+  type      RiskRuleType
+  enabled   Boolean      @default(true)
+  priority  Int          @default(100)
+  decision  RiskDecision
+  /// Rule parameters, validated per `type` by the rule compiler.
+  params    Json         @default("{}")
+  hitCount  BigInt       @default(0)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  events RiskEvent[]
+
+  @@index([enabled, priority])
+  @@map("risk_rules")
+}
+
+model RiskEvent {
+  id         BigInt       @id @default(autoincrement())
+  transferId String?      @db.Uuid
+  userId     String?      @db.Uuid
+  ruleId     String?      @db.Uuid
+  ruleName   String
+  ruleType   RiskRuleType
+  decision   RiskDecision
+  score      Decimal?     @db.Decimal(6, 3)
+  details    Json         @default("{}")
+  createdAt  DateTime     @default(now())
+
+  transfer Transfer? @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  rule     RiskRule? @relation(fields: [ruleId], references: [id], onDelete: SetNull)
+
+  @@index([transferId])
+  @@index([ruleId, createdAt])
+  @@index([decision, createdAt])
+  @@map("risk_events")
+}
+
+model ReviewQueueItem {
+  id            String       @id @default(uuid()) @db.Uuid
+  transferId    String       @unique @db.Uuid
+  status        ReviewStatus @default(OPEN)
+  score         Decimal?     @db.Decimal(6, 3)
+  reasons       Json         @default("[]")
+  assignedToUserId String?   @db.Uuid
+  decidedByUserId  String?   @db.Uuid
+  decisionNote  String?
+  decidedAt     DateTime?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  transfer  Transfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@map("review_queue_items")
+}
+
+// ---------------------------------------------------------------- events
+
+/// Transactional outbox: written in the same transaction as the business change,
+/// so an event can never be lost or published for a rolled-back change.
+model OutboxEvent {
+  id            BigInt       @id @default(autoincrement())
+  type          String
+  aggregateType String
+  aggregateId   String
+  /// Target user for per-user fan-out; null means bank-internal only.
+  userId        String?      @db.Uuid
+  payload       Json
+  status        OutboxStatus @default(PENDING)
+  attempts      Int          @default(0)
+  lastError     String?
+  availableAt   DateTime     @default(now())
+  processedAt   DateTime?
+  createdAt     DateTime     @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status, availableAt])
+  @@index([aggregateType, aggregateId])
+  @@map("outbox_events")
+}
+
+/// Durable event log backing SSE resumption: a client reconnects with
+/// `Last-Event-ID` and receives every event after that id, in order.
+model RealtimeEvent {
+  id        BigInt   @id @default(autoincrement())
+  userId    String?  @db.Uuid
+  type      String
+  payload   Json
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, id(sort: Desc)])
+  @@index([createdAt])
+  @@map("realtime_events")
+}
+
+model Notification {
+  id        String           @id @default(uuid()) @db.Uuid
+  userId    String           @db.Uuid
+  type      NotificationType
+  title     String
+  body      String
+  metadata  Json             @default("{}")
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, readAt])
+  @@map("notifications")
+}
+
+/// Stored responses for idempotent endpoints: replaying a POST with the same key
+/// returns the original status and body instead of moving money twice.
+model IdempotencyKey {
+  id             String   @id @default(uuid()) @db.Uuid
+  key            String
+  userId         String?  @db.Uuid
+  endpoint       String
+  requestHash    String
+  responseStatus Int
+  responseBody   Json
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+
+  @@unique([key, endpoint])
+  @@index([expiresAt])
+  @@map("idempotency_keys")
+}
+
+// ---------------------------------------------------------------- products
+
+model InterestRate {
+  id           String                @id @default(uuid()) @db.Uuid
+  product      InterestProduct
+  currency     String                @db.Char(3)
+  /// Nominal annual rate, exact decimal (e.g. 0.180000 = 18% per annum).
+  annualRate   Decimal               @db.Decimal(9, 6)
+  compounding  InterestCompounding
+  dayCount     DayCountConvention
+  minimumBalanceMinor BigInt         @default(0)
+  effectiveFrom DateTime             @db.Date
+  effectiveTo   DateTime?            @db.Date
+  createdAt    DateTime              @default(now())
+  createdByUserId String?            @db.Uuid
+
+  accruals InterestAccrual[]
+
+  @@index([product, currency, effectiveFrom])
+  @@map("interest_rates")
+}
+
+/// One account-day of accrued interest. Interest is accrued daily and posted to
+/// the ledger when capitalised, so the accrual itself is an off-ledger memo.
+model InterestAccrual {
+  id           String   @id @default(uuid()) @db.Uuid
+  accountId    String   @db.Uuid
+  rateId       String?  @db.Uuid
+  accrualDate  DateTime @db.Date
+  /// Average daily balance the accrual was computed from.
+  averageBalanceMinor BigInt
+  rate         Decimal  @db.Decimal(9, 6)
+  /// Exact year fraction used (day-count convention applied).
+  yearFraction Decimal  @db.Decimal(18, 12)
+  accruedMinor BigInt
+  capitalised  Boolean  @default(false)
+  capitalisedAt DateTime?
+  journalTransactionId String? @db.Uuid
+  createdAt    DateTime @default(now())
+
+  account Account      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  rate_   InterestRate? @relation(fields: [rateId], references: [id], onDelete: SetNull)
+
+  @@unique([accountId, accrualDate])
+  @@index([capitalised, accrualDate])
+  @@map("interest_accruals")
+}
+
+model Loan {
+  id               String     @id @default(uuid()) @db.Uuid
+  reference        String     @unique
+  userId           String     @db.Uuid
+  accountId        String     @db.Uuid
+  principalMinor   BigInt
+  currency         String     @db.Char(3)
+  annualRate       Decimal    @db.Decimal(9, 6)
+  termMonths       Int
+  periodsPerYear   Int        @default(12)
+  paymentMinor     BigInt
+  outstandingPrincipalMinor BigInt
+  outstandingInterestMinor  BigInt @default(0)
+  totalInterestMinor BigInt   @default(0)
+  purpose          String
+  status           LoanStatus @default(PENDING)
+  approvedByUserId String?    @db.Uuid
+  disbursedAt      DateTime?
+  firstDueDate     DateTime?  @db.Date
+  nextDueDate      DateTime?  @db.Date
+  settledAt        DateTime?
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  user        User               @relation(fields: [userId], references: [id], onDelete: Restrict)
+  account     Account            @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  schedule    LoanSchedule[]
+  journalTransactions JournalTransaction[]
+
+  @@index([userId, status])
+  @@index([status, nextDueDate])
+  @@map("loans")
+}
+
+model LoanSchedule {
+  id                String   @id @default(uuid()) @db.Uuid
+  loanId            String   @db.Uuid
+  installmentNumber Int
+  dueDate           DateTime @db.Date
+  paymentMinor      BigInt
+  interestMinor     BigInt
+  principalMinor    BigInt
+  openingBalanceMinor BigInt
+  closingBalanceMinor BigInt
+  paidMinor         BigInt   @default(0)
+  status            String   @default("PENDING")
+  paidAt            DateTime?
+  journalTransactionId String? @db.Uuid
+  createdAt         DateTime @default(now())
+
+  loan Loan @relation(fields: [loanId], references: [id], onDelete: Cascade)
+
+  @@unique([loanId, installmentNumber])
+  @@index([dueDate, status])
+  @@map("loan_schedules")
+}
+
+model Card {
+  id              String     @id @default(uuid()) @db.Uuid
+  userId          String     @db.Uuid
+  accountId       String     @db.Uuid
+  brand           CardBrand  @default(VERVE)
+  /// Only the last four digits and a keyed hash of the PAN are ever stored.
+  maskedPan       String
+  panHash         String     @unique
+  expiryMonth     Int
+  expiryYear      Int
+  status          CardStatus @default(PENDING)
+  dailyLimitMinor BigInt     @default(0)
+  pinHash         String?
+  frozenAt        DateTime?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  user           User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account        Account             @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  authorizations CardAuthorization[]
+
+  @@index([userId, status])
+  @@map("cards")
+}
+
+model CardAuthorization {
+  id               String                  @id @default(uuid()) @db.Uuid
+  cardId           String                  @db.Uuid
+  amountMinor      BigInt
+  currency         String                  @db.Char(3)
+  merchant         String
+  merchantCategory String?
+  channel          String                  @default("POS")
+  status           CardAuthorizationStatus @default(AUTHORIZED)
+  holdId           String?                 @unique @db.Uuid
+  journalTransactionId String?             @db.Uuid
+  createdAt        DateTime                @default(now())
+  capturedAt       DateTime?
+  voidedAt         DateTime?
+
+  card Card @relation(fields: [cardId], references: [id], onDelete: Cascade)
+
+  @@index([cardId, createdAt(sort: Desc)])
+  @@map("card_authorizations")
+}
+
+// ---------------------------------------------------------------- fx
+
+model FxRate {
+  id          String   @id @default(uuid()) @db.Uuid
+  base        String   @db.Char(3)
+  quote       String   @db.Char(3)
+  /// Mid-market rate, exact decimal. 12dp is enough for NGN/USD crosses.
+  rate        Decimal  @db.Decimal(24, 12)
+  source      String   @default("SEED")
+  effectiveAt DateTime
+  expiresAt   DateTime?
+  createdAt   DateTime @default(now())
+
+  @@unique([base, quote, effectiveAt])
+  @@index([base, quote, effectiveAt(sort: Desc)])
+  @@map("fx_rates")
+}
+
+model FxQuote {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String?  @db.Uuid
+  fromCurrency   String   @db.Char(3)
+  toCurrency     String   @db.Char(3)
+  fromAmountMinor BigInt
+  toAmountMinor  BigInt
+  rate           Decimal  @db.Decimal(24, 12)
+  spreadBps      Int
+  status         String   @default("OPEN")
+  expiresAt      DateTime
+  executedAt     DateTime?
+  journalTransactionId String? @db.Uuid @unique
+  createdAt      DateTime @default(now())
+
+  @@index([status, expiresAt])
+  @@map("fx_quotes")
+}
+
+// ---------------------------------------------------------------- ops
+
+model StatementExport {
+  id           String   @id @default(uuid()) @db.Uuid
+  accountId    String   @db.Uuid
+  userId       String   @db.Uuid
+  fromDate     DateTime @db.Date
+  toDate       DateTime @db.Date
+  format       String
+  status       String   @default("PENDING")
+  filePath     String?
+  entryCount   Int      @default(0)
+  openingBalanceMinor BigInt @default(0)
+  closingBalanceMinor BigInt @default(0)
+  requestedByUserId String? @db.Uuid
+  createdAt    DateTime @default(now())
+  completedAt  DateTime?
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("statement_exports")
+}
+
+/// Nightly proof that the materialised balances still agree with the ledger.
+model ReconciliationRun {
+  id             String      @id @default(uuid()) @db.Uuid
+  status         ReconStatus @default(RUNNING)
+  startedAt      DateTime    @default(now())
+  finishedAt     DateTime?
+  accountsChecked Int        @default(0)
+  entriesChecked BigInt      @default(0)
+  discrepancies  Int         @default(0)
+  report         Json?
+  hashChainOk    Boolean     @default(true)
+  firstBrokenLink BigInt?
+  triggeredBy    String      @default("SCHEDULER")
+  error          String?
+
+  @@index([startedAt(sort: Desc)])
+  @@map("reconciliation_runs")
+}
+

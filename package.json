@@ -1,0 +1,45 @@
+{
+  "name": "meridian",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Meridian - a core-banking demo: double-entry ledger, payments, interest, risk, and a React online-banking UI.",
+  "packageManager": "pnpm@11.22.0",
+  "engines": {
+    "node": ">=22.15.0"
+  },
+  "scripts": {
+    "build:packages": "pnpm --filter @meridian/money build && pnpm --filter @meridian/contracts build",
+    "dev": "pnpm build:packages && concurrently -n api,web -c blue,magenta \"pnpm --filter @meridian/api start:dev\" \"pnpm --filter @meridian/web dev\"",
+    "dev:api": "pnpm --filter @meridian/api start:dev",
+    "dev:web": "pnpm --filter @meridian/web dev",
+    "build": "pnpm build:packages && pnpm --filter @meridian/api build && pnpm --filter @meridian/web build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "test": "pnpm -r test",
+    "test:unit": "pnpm -r test:unit",
+    "test:integration": "pnpm --filter @meridian/api test:integration",
+    "test:e2e": "pnpm --filter @meridian/api test:e2e",
+    "infra:up": "docker compose up -d",
+    "infra:down": "docker compose down",
+    "infra:reset": "docker compose down -v && docker compose up -d",
+    "db:generate": "pnpm --filter @meridian/api db:generate",
+    "db:migrate": "pnpm --filter @meridian/api db:migrate",
+    "db:deploy": "pnpm --filter @meridian/api db:deploy",
+    "db:seed": "pnpm --filter @meridian/api db:seed",
+    "db:studio": "pnpm --filter @meridian/api db:studio",
+    "ledger:verify": "pnpm --filter @meridian/api ledger:verify",
+    "api:openapi": "pnpm --filter @meridian/api openapi:emit",
+    "web:codegen": "pnpm --filter @meridian/web codegen",
+    "bootstrap": "pnpm install && pnpm infra:up && pnpm db:generate && pnpm db:migrate && pnpm db:seed"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "eslint": "^9.39.1",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.9.10",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.71.2"
+  }
+}
