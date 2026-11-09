@@ -42,3 +42,6 @@ desktop.ini
 # misc
 .tmp-*
 tmp/
+
+# stray backups
+*.bak
