@@ -4,8 +4,7 @@ A core-banking demo built to be read as much as run: a real double-entry ledger,
 concurrency-correct money movement, payments, interest and loans, an FX desk, a risk
 engine, and a React online-banking front end.
 
-> Status: under construction. See [`PLAN.md`](./PLAN.md) for the full roadmap and
-> [`docs/`](./docs) for architecture decisions.
+See [`docs/`](./docs) for architecture decisions.
 
 ## Quick start
 
